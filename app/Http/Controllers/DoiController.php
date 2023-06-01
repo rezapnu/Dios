@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -22,6 +23,9 @@ class DoiController extends Controller
         Log::info('...............start.................');
         $consortiumId = $request->consortiumId;
         $providersAndClientsAndDoiCount = $this->main($consortiumId);
+        Log::info('.', [
+            '$providersAndClientsAndDoiCount' => Count($providersAndClientsAndDoiCount)
+        ]);
         Log::info('...............end.................');
 
         return view('dios', compact('providersAndClientsAndDoiCount', 'consortiumId'));
@@ -32,7 +36,7 @@ class DoiController extends Controller
         ini_set('max_execution_time', 1200);
 
         $providers = $this->getProvidersByConsortiumId($consortiumId);
-        $providersAndClientsAndDoiCount = $this->getDoisByClientId_asyn($providers);
+        $providersAndClientsAndDoiCount = $this->getDoisByClientId_asyn2($providers);
         return $providersAndClientsAndDoiCount;
     }
 
@@ -73,8 +77,6 @@ class DoiController extends Controller
                     Log::info('.', [
                         '$clientID' => $clientID,
                         '$providerId' => $providerId,
-                        '$clients' => $clients,
-                        '$providersAndClients' => $providersAndClients
                     ]);
                     $promises[] = Http::async()->get("https://api.datacite.org/dois?client-id=$clientID")
                         ->then(function ($res) use ($providersAndClients, $providerId, $clientID) {
@@ -102,6 +104,61 @@ class DoiController extends Controller
             return $exception->getMessage();
         }
     }
+
+    protected function getDoisByClientId_asyn1($providers)
+    {
+        try {
+            $providersAndClients = collect([]);
+            $i = 0;
+            $responses = [];
+
+            foreach ($providers as $provider) {
+                $providerId = $provider['id'];
+                $clients = $provider['relationships']['clients']['data'];
+                $clientIDs = collect([]);
+                Log::info('$i', [
+                    '$i' => $i,
+                    'Count($clients)' => Count($clients)
+                ]);
+                ++$i;
+
+                $responses = Http::pool(fn(Pool $pool) => array_map(function ($client) use ($providersAndClients, $providerId, $pool) {
+                    $clientID = $client['id'];
+                    Log::info('.', [
+                        '$clientID' => $clientID,
+                        '$providerId' => $providerId,
+                    ]);
+                    $pool->timeout(360)->retry(3)->get("https://api.datacite.org/dois?client-id=$clientID")
+                        ->then(function ($res) use ($providersAndClients, $providerId, $clientID) {
+                            $dois = $res->json('data');
+                            $doisCount = Count($dois);
+                            Log::info('.', [
+                                'clientID' => $clientID
+                            ]);
+                            $providersAndClients->push([
+                                'providerID' => $providerId,
+                                'clientID' => $clientID,
+                                'doisCount' => $doisCount
+                            ]);
+                        });
+
+
+                }, $clients));
+
+
+
+
+            }
+
+
+            return $providersAndClients;
+
+
+        } catch (Throwable $exception) {
+            return $exception->getMessage();
+        }
+    }
+
 
     protected function getDoisByClientId($providers)
     {
